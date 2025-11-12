@@ -1,8 +1,7 @@
-"""Get data from OpenStreetMap on road features and amenities that could impact crashes."""
+"""Get data from OpenStreetMap on road features and amenities that could impact crashes in the city of Milan."""
 
 import geopandas as gpd
 import igraph as ig
-import networkx as nx
 import numpy as np
 import osmnx as ox
 import pandas as pd
@@ -49,6 +48,8 @@ BUFFER_NEARBY = 15  # Buffer in meter to know if a polygon amenity is near a roa
 USEFUL_TAGS = [
     "parking:left",
     "parking:right",
+    "cycleway",
+    "footway",
 ]  # Additional tags to extract for the road network
 AMENITIES_DICT = {  # List of amenities from tags and values to extract
     "public_transport": ["platform"],
@@ -77,10 +78,17 @@ HIGHWAY_DICT = {  # Hierarchy in the road network
     "residential": 7,
     "living_street": 7,
     "busway": 8,
+    "bus_stop": 8,
+    "service": 8,
+    "services": 8,
+    "track": 8,
     "emergency_bay": 8,
     "road": 8,
+    "cycleway": 9,
+    "footway": 10,
 }
 
+# TODO make bikeways and footways attribute from highway tags
 
 if __name__ == "__main__":
     ox.settings.useful_tags_way += USEFUL_TAGS
@@ -90,12 +98,40 @@ if __name__ == "__main__":
     milano_poly.to_crs(epsg=4326, inplace=True)
     # Take only drivable roads for crashes
     G = ox.graph_from_polygon(
-        milano_poly.geometry[0], network_type="drive", simplify=False
+        milano_poly.geometry[0], network_type="all", simplify=False
     )
     # Simplify while discriminate for relevant attributes
     G = ox.simplify_graph(
         G, edge_attrs_differ=["highway", "parking:left", "parking:right", "maxspeed"]
     )
+    # Simplify footways' values in highway tag
+    for e in G.edges:
+        if G.edges[e]["highway"] in [
+            "corridor",
+            "bridleway",
+            "pedestrian",
+            "path",
+            "steps",
+        ]:
+            G.edges[e]["highway"] = "footway"
+    # Add presence of cycling infrastructure boolean
+    for e in G.edges:
+        if G.edges[e]["highway"] == "cycleway":
+            G.edges[e]["cycling_infrastructure"] = True
+        elif "cycleway" in G.edges[e]:
+            if G.edges[e]["cycleway"] != "no":
+                G.edges[e]["cycling_infrastructure"] = True
+        else:
+            G.edges[e]["cycling_infrastructure"] = False
+    # Add presence of pedestrian infrastructure boolean
+    for e in G.edges:
+        if G.edges[e]["highway"] == "footway":
+            G.edges[e]["pedestrian_infrastructure"] = True
+        elif "footway" in G.edges[e]:
+            if G.edges[e]["footway"] != "no":
+                G.edges[e]["pedestrian_infrastructure"] = True
+        else:
+            G.edges[e]["pedestrian_infrastructure"] = False
     # Compute travel time to increase centrality of high speed roads
     # For maxspeed, compute average of roads with same highway attribute, else use fallback
     G = ox.add_edge_speeds(G, fallback=FALLBACK_SPEED)
@@ -181,21 +217,6 @@ if __name__ == "__main__":
         else x
     )
     gdf_cleaned.to_file("./data/processed/Milan/Milan_features_2_classified_wols.gpkg")
-    vals = []
-    # For small buildings, transform polygon into centroids
-    for ind, row in gdf_cleaned.iterrows():
-        if (
-            isinstance(row.geometry, shapely.Polygon)
-            or isinstance(row.geometry, shapely.MultiPolygon)
-        ) and (row["type"] in ["shop", "public_transport_platform", "bicycle_parking"]):
-            if isinstance(row.geometry, shapely.Polygon):
-                vals.append(row.geometry.centroid)
-            elif isinstance(row.geometry, shapely.MultiPolygon):
-                vals.append(shapely.Polygon(row.geometry).centroid)
-        else:
-            vals.append(row.geometry)
-    gdf_cleaned.geometry = vals
-    gdf_cleaned.to_file("./data/processed/Milan/Milan_features_3_simplified.gpkg")
     # Keep only important attributes to create lighter file
     gdf_simple = gdf_cleaned[["type", "geometry"]].copy()
     vals = []
@@ -204,7 +225,7 @@ if __name__ == "__main__":
         vals.append(ind[0][0].upper() + str(ind[1]))
     gdf_simple["osmid"] = vals
     gdf_simple = gdf_simple.set_index("osmid")
-    gdf_simple.to_file("./data/processed/Milan/Milan_features_4_dense.gpkg")
+    gdf_simple.to_file("./data/processed/Milan/Milan_features_3_dense.gpkg")
     gdf_simple_poly = gdf_simple[
         gdf_simple.geometry.apply(
             lambda x: True
@@ -252,7 +273,9 @@ if __name__ == "__main__":
     gdf_edges["hierarchy"] = gdf_edges["hierarchy"].apply(
         lambda x: x.removesuffix("_link")
     )
-    gdf_edges["hierarchy"] = gdf_edges["hierarchy"].apply(lambda x: HIGHWAY_DICT[x])
+    gdf_edges["hierarchy"] = gdf_edges["hierarchy"].apply(
+        lambda x: HIGHWAY_DICT[x] if x in HIGHWAY_DICT else 8
+    )
     gdf_edges = gdf_edges.to_crs(epsg=4326)
     # Some nodes from the road also have traffic signals or crossings
     gdf_nodes["traffic_signals"] = [
@@ -297,19 +320,20 @@ if __name__ == "__main__":
     ox.save_graphml(G, "./data/processed/Milan/Milan_graph_2_dense.graphml")
     ox.save_graph_geopackage(G, "./data/processed/Milan/Milan_graph_2_dense.gpkg")
     # Use igraph to compute more quickly edge betweenness
-    G_ig = ig.Graph.from_networkx(G)
-    bet_length = G_ig.edge_betweenness(directed=True, weights="length")
-    G_ig.es["edge_betweenness_centrality_length"] = np.array(bet_length) / (
-        len(G.edges) * (len(G.edges) - 1)
-    )
-    bet_time = G_ig.edge_betweenness(directed=True, weights="travel_time")
-    G_ig.es["edge_betweenness_centrality_time"] = np.array(bet_time) / (
-        len(G.edges) * (len(G.edges) - 1)
-    )
-    H = G_ig.to_networkx()
-    ox.save_graphml(H, "./data/processed/Milan/Milan_graph_3_metrics.graphml")
-    ox.save_graph_geopackage(H, "./data/processed/Milan/Milan_graph_3_metrics.gpkg")
-    hnodes, hedges = ox.graph_to_gdfs(H)
+    # Careful, very slow, so not great on small computer
+    # G_ig = ig.Graph.from_networkx(G)
+    # bet_length = G_ig.edge_betweenness(directed=True, weights="length")
+    # G_ig.es["edge_betweenness_centrality_length"] = np.array(bet_length) / (
+    #     len(G.edges) * (len(G.edges) - 1)
+    # )
+    # bet_time = G_ig.edge_betweenness(directed=True, weights="travel_time")
+    # G_ig.es["edge_betweenness_centrality_time"] = np.array(bet_time) / (
+    #     len(G.edges) * (len(G.edges) - 1)
+    # )
+    # G = G_ig.to_networkx()
+    ox.save_graphml(G, "./data/processed/Milan/Milan_graph_3_metrics.graphml")
+    ox.save_graph_geopackage(G, "./data/processed/Milan/Milan_graph_3_metrics.gpkg")
+    hnodes, hedges = ox.graph_to_gdfs(G)
     gdf_edges_simplified = hedges.copy()
     # Homogeneize osmid between amenities and roads
     gdf_edges_simplified["osmid"] = hedges["osmid"].apply(
@@ -318,10 +342,10 @@ if __name__ == "__main__":
         else ["W" + str(val) for val in x]
     )
     gdf_edges_simplified = hedges.set_index(keys="osmid")
-    gdf_edges_simplified = gdf_edges_simplified.drop("_igraph_index", axis=1)
+    # gdf_edges_simplified = gdf_edges_simplified.drop("_igraph_index", axis=1)
     gdf_nodes_simplified = hnodes.copy()
     gdf_nodes_simplified.index = ["N" + str(x) for x in gdf_nodes_simplified.index]
-    gdf_nodes_simplified = gdf_nodes_simplified.drop("_igraph_index", axis=1)
+    # gdf_nodes_simplified = gdf_nodes_simplified.drop("_igraph_index", axis=1)
     # Get origin for all kind of geodata to join them all
     gdf_edges_simplified["origin"] = "road"
     gdf_nodes_simplified["origin"] = "node"
@@ -337,6 +361,7 @@ if __name__ == "__main__":
         how="left",
         predicate="intersects",
     )
+    # TODO fix problem
     duplicates = nf[pd.notna(nf["origin_right"])].index.values
     gdf_nodes_simplified_curated = gdf_nodes_simplified.drop(duplicates, axis=0)
     # Keep only nodes not already in amenities and that are intersections
