@@ -1,4 +1,4 @@
-"""Get raw graphs from OpenStreetMap in selected cities."""
+"""Get raw graphs from OpenStreetMap for selected cities."""
 
 import geopandas as gpd
 import osmnx as ox
@@ -36,11 +36,12 @@ if __name__ == "__main__":
         #TODO fix for Milan metropolitan because multipolygon and not polygon
         outfolder = FOLDERPATH_CITIES + cityname + "/"
         if (os.path.exists(outfolder + cityname + "_graph_0_raw.graphml") and RECOMPUTE) or (not os.path.exists(outfolder + cityname + "_graph_0_raw.graphml")):
+            print(cityname)
             if not os.path.exists(outfolder):
                 os.makedirs(outfolder)
             poly = gpd.read_file(FOLDERPATH_POLY + cityname + ".gpkg")
             G = ox.graph_from_polygon(
-                poly.geometry[0], network_type=NETWORK_TYPE, simplify=False
+                poly.geometry[0], network_type=NETWORK_TYPE, simplify=False, retain_all=True,
             )
             # Simplify while discriminate for relevant attributes
             G = ox.simplify_graph(
