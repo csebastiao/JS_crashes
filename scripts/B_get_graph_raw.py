@@ -14,7 +14,7 @@ USEFUL_TAGS = [
     "cycleway",
     "footway",
 ]  # Additional tags to extract for the road network
-FOLDERPATH_POLY = "./data/processed/0_cities_polygons/"
+FOLDERPATH_POLY = "./data/processed/1_cities_boundaries/"
 FOLDERPATH_CITIES = "./data/processed/"
 CITIES = [
     "Braga",
