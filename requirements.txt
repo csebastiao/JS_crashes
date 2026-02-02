@@ -1,2 +1,5 @@
 pytest
 pre-commit
+geopandas
+osmnx
+igraph

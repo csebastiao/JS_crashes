@@ -1,6 +1,9 @@
-name: ENVNAME
+name: JS_crashes
 channels:
   - conda-forge
 dependencies:
   - pytest
   - pre-commit
+  - geopandas
+  - osmnx
+  - igraph
